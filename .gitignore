@@ -1,0 +1,9 @@
+checkpoints*
+datasets/
+mmseg/
+
+.json
+.txt
+
+__init__.py
+__pycache__/
