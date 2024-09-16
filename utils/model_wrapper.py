@@ -62,15 +62,15 @@ class ModelWrapper(nn.Module):
             self.model = DFormer(cfg=self.config, criterion=self.criterion, norm_layer=self.norm_layer)
             self.params_list = group_weight([], self.model, self.norm_layer, self.config.lr)
         
-            rgb_config = copy.deepcopy(self.config)
-            rgb_config.x_channels = 3
-            rgb_config.x_e_channels = 3
-            self.rgb_model = DFormer(cfg=rgb_config, criterion=self.criterion, norm_layer=self.norm_layer)
+            # rgb_config = copy.deepcopy(self.config)
+            # rgb_config.x_channels = 3
+            # rgb_config.x_e_channels = 3
+            # self.rgb_model = DFormer(cfg=rgb_config, criterion=self.criterion, norm_layer=self.norm_layer)
 
-            depth_config = copy.deepcopy(self.config)
-            depth_config.x_channels = 1
-            depth_config.x_e_channels = 1
-            self.depth_model = DFormer(cfg=depth_config, criterion=self.criterion, norm_layer=self.norm_layer)
+            # depth_config = copy.deepcopy(self.config)
+            # depth_config.x_channels = 1
+            # depth_config.x_e_channels = 1
+            # self.depth_model = DFormer(cfg=depth_config, criterion=self.criterion, norm_layer=self.norm_layer)
 
         elif self.model_name == "DeepLab":
             self.model = DeepLab(cfg=self.config, criterion=self.criterion, norm_layer=self.norm_layer)

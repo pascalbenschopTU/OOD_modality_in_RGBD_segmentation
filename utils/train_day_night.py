@@ -21,6 +21,7 @@ from evaluate_models import evaluate_with_loader
 from adapt_dataset_and_test import test_property_shift
 from dataloader.RGBXDataset import RGBXDataset
 from dataloader.dataloader import get_val_loader, get_train_loader
+from hyperparameter_tuning import tune_hyperparameters
 
 import importlib
 import json
@@ -134,7 +135,7 @@ def main(args):
             "num_train_imgs": len(trainset),
             "num_eval_imgs": len(valset),
             "background": CityscapesExt.voidClass,
-            "batch_size": 1,
+            "batch_size": 4,
         })
 
         model = ModelWrapper(
@@ -176,6 +177,36 @@ def main(args):
             model.set_ood_scores("nyud_training_ood_scores.json")
 
     if args.mode == 'train':
+        if args.tune_hyperparameters:
+            # Split train dataloader into train and val
+            train_dataset = dataloaders['train'].dataset
+            train_dataset_subset, val_dataset_subset = torch.utils.data.random_split(
+                train_dataset,
+                [int(0.4 * len(train_dataset)), len(train_dataset) - int(0.4 * len(train_dataset))]
+            )
+        
+            # Tune hyperparameters
+            hyperparameter_config = tune_hyperparameters(
+                config,
+                train_dataset_subset,
+                train_callback=train_model_from_config,
+                num_samples=1,
+                max_num_epochs=1,
+            )
+
+            config["lr"] = hyperparameter_config["lr"]
+            config["batch_size"] = hyperparameter_config["batch_size"]
+            config["lr_power"] = hyperparameter_config["lr_power"]
+            config["momentum"] = hyperparameter_config["momentum"]
+            config["weight_decay"] = hyperparameter_config["weight_decay"]
+
+            checkpoint_path = config.log_dir
+            if not os.path.exists(checkpoint_path):
+                os.makedirs(checkpoint_path, exist_ok=True)
+            time_date = time.strftime("%Y%m%d-%H%M%S")
+            with open(f"{checkpoint_path}/hyperparameters_{time_date}.json", "w") as f:
+                json.dump(hyperparameter_config, f)
+        
         train_model_from_config(config=config, train_loader=dataloaders['train'], val_loader=dataloaders['val'])
     elif args.mode == 'test':
         with open('results.txt', 'a') as f:
@@ -440,6 +471,8 @@ if __name__ == '__main__':
                         help='Mode to run the script in. Either "train", "test" or "adapt"')
     parser.add_argument('-d', '--dataset', type=str, default='cityscapes',
                         help='Dataset to use. Either "cityscapes" or "nyu"')
+    parser.add_argument('-th', '--tune-hyperparameters', action='store_true', default=False,
+                        help='Tune hyperparameters')
     args = parser.parse_args()
 
     main(args)

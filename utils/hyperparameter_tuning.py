@@ -25,31 +25,17 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 # https://docs.ray.io/en/latest/tune/examples/hpo-frameworks.html
 # https://docs.ray.io/en/latest/tune/api_docs/suggestion.html#tune-suggest-optuna
 
-def get_dataset(config):
-    data_setting = {'rgb_root': config.rgb_root_folder,
-                    'rgb_format': config.rgb_format,
-                    'gt_root': config.gt_root_folder,
-                    'gt_format': config.gt_format,
-                    'transform_gt': config.gt_transform,
-                    'x_root':config.x_root_folder,
-                    'x_format': config.x_format,
-                    'x_single_channel': config.x_is_single_channel,
-                    'class_names': config.class_names,
-                    'train_source': config.train_source,
-                    'eval_source': config.eval_source,
-                    'class_names': config.class_names}
-    train_preprocess = ValPre(config.norm_mean, config.norm_std,config.x_is_single_channel,config)
-
-    num_imgs = int((config.num_train_imgs // config.batch_size + 1) * config.batch_size)
-    train_dataset = RGBXDataset(data_setting, "train", train_preprocess, num_imgs)
-
-    return train_dataset
-
 def ray_callback(miou, loss, epoch):
     train.report({"miou": miou, "loss": loss, "epoch": epoch})
 
-def train_dformer(hyperparameters, config, train_dataset, num_epochs=5, train_callback=None):
-    # Set hyperparemeters
+def update_config_with_hyperparameters(
+        hyperparameters, 
+        config, 
+        num_epochs, 
+        train_loader_length, 
+        val_loader_length
+    ):
+    # Set hyperparameters
     config.lr = hyperparameters["lr"]
     config.lr_power = hyperparameters["lr_power"]
     config.momentum = hyperparameters["momentum"]
@@ -57,26 +43,22 @@ def train_dformer(hyperparameters, config, train_dataset, num_epochs=5, train_ca
     config.batch_size = hyperparameters["batch_size"]
     config.nepochs = num_epochs
     config.warm_up_epoch = 1
-
-    # set_seed(config.seed)
-    dataset_length = len(train_dataset)
-    train_length = int(0.8 * dataset_length)
-    validate_length = dataset_length - train_length
-
-    train_subset, validate_subset = torch.utils.data.random_split(
-        train_dataset, 
-        [train_length, validate_length],
-    )
-    train_size = len(train_subset)
-
-    config.num_train_imgs = (train_size // config.batch_size) * config.batch_size
     config.checkpoint_step = 1
     config.checkpoint_start_epoch = 0
+    config.num_train_imgs = train_loader_length * config.batch_size
+    config.num_val_imgs = val_loader_length * config.batch_size
 
-    train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(validate_subset, batch_size=config.batch_size, shuffle=False)
-    print('train size: ',len(train_loader), 'val size: ',len(val_loader), "batch size: ", config.batch_size)
+    return config
 
+def train_setup(
+        hyperparameters,
+        config, 
+        train_loader, 
+        val_loader, 
+        num_epochs=5, 
+        train_callback=None
+    ):
+    config = update_config_with_hyperparameters(hyperparameters, config, num_epochs, len(train_loader), len(val_loader))
     kwargs = {
         "is_tuning": True,
         "train_loader": train_loader,
@@ -84,9 +66,6 @@ def train_dformer(hyperparameters, config, train_dataset, num_epochs=5, train_ca
         "ray_callback": ray_callback,
     }
 
-    if train_callback is None:
-        print("No train callback provided, exiting")
-        return
     train_callback(config, **kwargs)
 
 
@@ -111,14 +90,22 @@ def update_config_paths(config):
     
     return config
 
-def tune_hyperparameters(config, num_samples=20, max_num_epochs=5, cpus_per_trial=4, gpus_per_trial=1, train_callback=None):
+def tune_hyperparameters(
+        config, 
+        train_dataset,
+        num_samples=20, 
+        max_num_epochs=5, 
+        cpus_per_trial=4, 
+        gpus_per_trial=1, 
+        train_callback=None
+    ):
     config = update_config_paths(config)
 
     experiment_name = f"{config.dataset_name}_{config.backbone}"
 
     param_space = {
         "lr": tune.loguniform(1e-5, 1e-3),
-        "batch_size": tune.choice([8, 16]),
+        "batch_size": tune.choice([16]),
         "lr_power": tune.uniform(0.8, 1.0),
         "momentum": tune.uniform(0.9, 0.99),
         "weight_decay": tune.loguniform(1e-4, 1e-2),
@@ -127,7 +114,7 @@ def tune_hyperparameters(config, num_samples=20, max_num_epochs=5, cpus_per_tria
     model = config.get("model", None)
     large_models = ["mit_b2", "xception", "mit_b3", "DFormer-Base", "TokenFusion", "Gemini", "CMX", "HIDANet"]
     if config.backbone in large_models or model in large_models:
-        param_space["batch_size"] = tune.choice([4, 8])
+        param_space["batch_size"] = tune.choice([4])
     extra_large_models = ["DFormer-Large"]
     if config.backbone in extra_large_models:
         param_space["batch_size"] = tune.choice([4])
@@ -146,16 +133,25 @@ def tune_hyperparameters(config, num_samples=20, max_num_epochs=5, cpus_per_tria
         reduction_factor=2,
     )
 
-    train_dataset = get_dataset(config)
-
     ray.init()
+
+    # Split the dataset into training and validation sets
+    train_dataset_split, val_dataset_split = torch.utils.data.random_split(
+        train_dataset, 
+        [int(0.8 * len(train_dataset)), len(train_dataset) - int(0.8 * len(train_dataset))]
+    )
+
+    # Create DataLoaders for the training and validation sets
+    train_loader = DataLoader(train_dataset_split, batch_size=4, shuffle=True)
+    val_loader = DataLoader(val_dataset_split, batch_size=4, shuffle=False)
 
     tuner = tune.Tuner(
         tune.with_resources(
             tune.with_parameters(
-                train_dformer, 
+                train_setup, 
                 config=config,
-                train_dataset=train_dataset,
+                train_loader=train_loader,
+                val_loader=val_loader,
                 num_epochs=max_num_epochs,
                 train_callback=train_callback,                
             ),
@@ -168,11 +164,6 @@ def tune_hyperparameters(config, num_samples=20, max_num_epochs=5, cpus_per_tria
             num_samples=num_samples,
         ),
         run_config=train.RunConfig(
-            # callbacks=[WandbLoggerCallback(
-            #     project="DFormer_hyperparameter_tuning",
-            #     group=experiment_name,
-            #     api_key=os.environ.get("WANDB_API_KEY"),
-            # )],
             stop={"training_iteration": max_num_epochs},
         ),
         param_space=param_space,
