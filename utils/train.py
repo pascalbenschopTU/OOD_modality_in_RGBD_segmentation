@@ -125,9 +125,9 @@ def train_model_from_config(config, **kwargs):
             gts = minibatch['label']
             modal_xs = minibatch['modal_x']
 
-            imgs = imgs.cuda(non_blocking=True)
-            gts = gts.cuda(non_blocking=True)
-            modal_xs = modal_xs.cuda(non_blocking=True)
+            imgs = imgs.to(device)
+            gts = gts.to(device)
+            modal_xs = modal_xs.to(device)
     
             output = model(imgs, modal_xs)
 
@@ -168,7 +168,8 @@ def train_model_from_config(config, **kwargs):
         tb.add_scalar('train/lr', lr, epoch)
 
         if (epoch % config.checkpoint_step == 0 and epoch > int(config.checkpoint_start_epoch)) or epoch == config.nepochs:
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             with torch.no_grad():
                 model.eval()

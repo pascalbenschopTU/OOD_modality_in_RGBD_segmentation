@@ -1,10 +1,11 @@
 checkpoints*/
 datasets/
 mmseg/
-
+.venv/
 
 *.json
 *.txt
 
 __init__.py
 __pycache__/
+.DS_Store

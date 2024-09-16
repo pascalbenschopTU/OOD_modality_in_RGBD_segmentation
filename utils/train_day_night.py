@@ -3,6 +3,11 @@
 Created on Thu Sep 12 13:37:37 2019 by Attila Lengyel - attila@lengyel.nl
 """
 
+import sys
+import os
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(root_dir)
+
 # from utils2.helpers import gen_train_dirs, plot_confusion_matrix, get_train_trans, get_test_trans
 from dataloader.transforms import train_trans, test_trans
 # from utils.routines import train_epoch, evaluate
@@ -27,6 +32,8 @@ import shutil, time, random
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_model_weights(model, dataset='cityscapes'):
     if dataset == 'cityscapes':
@@ -63,11 +70,6 @@ def load_model_weights(model, dataset='cityscapes'):
         # exit()
 
 def main(args):
-    # Configure dataset paths here
-    cs_path = os.path.abspath('datasets/Cityscapes/')
-    nd_path = os.path.abspath('datasets/NighttimeDrivingTest/')
-    dz_path = os.path.abspath('datasets/Dark_Zurich_val_anon/')
-
     print('--- Training args ---')
     print(args)
 
@@ -76,13 +78,6 @@ def main(args):
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         cudnn.deterministic = True
-
-    # Load dataset
-    trainset = CityscapesExt(cs_path, split='train', target_type='semantic', transforms=train_trans)
-    valset = CityscapesExt(cs_path, split='val', target_type='semantic', transforms=test_trans)
-    testset_day = CityscapesExt(cs_path, split='test', target_type='semantic', transforms=test_trans)
-    testset_nd = NighttimeDrivingDataset(nd_path, transforms=test_trans)
-    testset_dz = DarkZurichDataset(dz_path, transforms=test_trans)
 
     # Use mini-dataset for debugging purposes
     if args.xs:
@@ -93,6 +88,17 @@ def main(args):
         print('WARNING: XS_DATASET SET TRUE')
 
     if args.dataset == 'cityscapes':
+        # Configure dataset paths here
+        cs_path = os.path.abspath('datasets/Cityscapes/')
+        nd_path = os.path.abspath('datasets/NighttimeDrivingTest/')
+        dz_path = os.path.abspath('datasets/Dark_Zurich_val_anon/')
+
+        # Load dataset
+        trainset = CityscapesExt(cs_path, split='train', target_type='semantic', transforms=train_trans)
+        valset = CityscapesExt(cs_path, split='val', target_type='semantic', transforms=test_trans)
+        testset_day = CityscapesExt(cs_path, split='test', target_type='semantic', transforms=test_trans)
+        testset_nd = NighttimeDrivingDataset(nd_path, transforms=test_trans)
+        testset_dz = DarkZurichDataset(dz_path, transforms=test_trans)
 
         dataloaders = {}
         dataloaders['train'] = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
@@ -138,7 +144,8 @@ def main(args):
             pretrained=True,
         )
 
-        model.set_ood_scores("cityscapes_training_ood_scores.json")
+        if args.mode != 'train':
+            model.set_ood_scores("cityscapes_training_ood_scores.json")
     
     elif args.dataset == 'nyu':
         MODEL_CONFIGURATION_DICT_FILE = "configs/model_configurations.json"
@@ -165,8 +172,8 @@ def main(args):
             norm_layer=nn.BatchNorm2d,
             pretrained=True,
         )
-
-        model.set_ood_scores("nyud_training_ood_scores.json")
+        if args.mode != 'train':
+            model.set_ood_scores("nyud_training_ood_scores.json")
 
     if args.mode == 'train':
         train_model_from_config(config=config, train_loader=dataloaders['train'], val_loader=dataloaders['val'])
@@ -175,16 +182,17 @@ def main(args):
             f.write(str(config) + '\n')
             f.write(f"Time: {time.strftime('%H:%M:%S', time.gmtime())}\n")
 
-        model.to('cuda')
+        model.to(device)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(0)
+            torch.cuda.empty_cache()
         
         # Load model weights
         load_model_weights(model, args.dataset)
 
-        torch.cuda.empty_cache()
         model.eval()
 
         with torch.no_grad():
@@ -192,7 +200,7 @@ def main(args):
                 model=model,
                 dataloader=dataloaders['val'],
                 config=config,
-                device='cuda',
+                device=device,
                 bin_size=float('inf'),
             )
 
@@ -202,7 +210,9 @@ def main(args):
                 f.write(f"validation results: {str(evaluator.miou)} \n")
 
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.manual_seed(0)
 
         model2 = ModelWrapper(
             config=config,
@@ -210,9 +220,9 @@ def main(args):
             norm_layer=nn.BatchNorm2d,
             pretrained=True,
         )
-        model2.to('cuda')
+        model2.to(device)
         load_model_weights(model2, args.dataset)
-        torch.cuda.empty_cache()
+        
         model2.eval()
 
         with torch.no_grad():
@@ -221,7 +231,7 @@ def main(args):
                 model=model2,
                 dataloader=dataloaders['test_nd'],
                 config=config,
-                device='cuda',
+                device=device,
                 bin_size=float('inf'),
             )
 
@@ -231,7 +241,9 @@ def main(args):
                 f.write(f"night results: {str(evaluator2.miou)} \n")
 
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.manual_seed(0)
 
         model3 = ModelWrapper(
             config=config,
@@ -239,9 +251,8 @@ def main(args):
             norm_layer=nn.BatchNorm2d,
             pretrained=True,
         )
-        model3.to('cuda')
+        model3.to(device)
         load_model_weights(model3, args.dataset)
-        torch.cuda.empty_cache()
         model3.eval() 
 
         with torch.no_grad():
@@ -249,7 +260,7 @@ def main(args):
                 model=model3,
                 dataloader=dataloaders['test_dz'],
                 config=config,
-                device='cuda',
+                device=device,
                 bin_size=float('inf'),
             )
 
@@ -259,16 +270,17 @@ def main(args):
                 f.write(f"dark zurich results: {str(evaluator3.miou)} \n")
 
     elif args.mode == 'adapt':
-        model.to('cuda')
+        model.to(device)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(0)
+            torch.cuda.empty_cache()
         
         # Load model weights
         load_model_weights(model, args.dataset)
 
-        torch.cuda.empty_cache()
         model.eval()
 
         # test_property_shift(
@@ -280,7 +292,7 @@ def main(args):
         #     origin_directory_path=r"datasets\Cityscapes\leftImg8bit\val_original",
         #     destination_directory_path=r"datasets\Cityscapes\leftImg8bit\val", 
         #     split="test", 
-        #     device="cuda",
+        #     device=device,
         # )
 
         # test_property_shift(
@@ -292,7 +304,7 @@ def main(args):
         #     origin_directory_path=r"datasets\Cityscapes\leftImg8bit\val_original",
         #     destination_directory_path=r"datasets\Cityscapes\leftImg8bit\val",
         #     split="test",
-        #     device="cuda",
+        #     device=device,
         # )
 
         # test_property_shift(
@@ -304,7 +316,7 @@ def main(args):
         #     origin_directory_path=r"datasets\Cityscapes\depth\val_original",
         #     destination_directory_path=r"datasets\Cityscapes\depth\val",
         #     split="test",
-        #     device="cuda",
+        #     device=device,
         # )
 
         # test_property_shift(
@@ -316,7 +328,7 @@ def main(args):
         #     origin_directory_path=r"datasets\NYUDepthv2\RGB_original",
         #     destination_directory_path=r"datasets\NYUDepthv2\RGB",
         #     split="test",
-        #     device="cuda",
+        #     device=device,
         # )
 
         test_property_shift(
@@ -328,7 +340,7 @@ def main(args):
             origin_directory_path=r"datasets\NYUDepthv2\RGB_original",
             destination_directory_path=r"datasets\NYUDepthv2\RGB",
             split="test",
-            device="cuda",
+            device=device,
         )
 
         # test_property_shift(
@@ -340,7 +352,7 @@ def main(args):
         #     origin_directory_path=r"datasets\NYUDepthv2\Depth_original",
         #     destination_directory_path=r"datasets\NYUDepthv2\Depth",
         #     split="test",
-        #     device="cuda",
+        #     device=device,
         # )
 
 
@@ -349,7 +361,7 @@ def main(args):
         #         model=model,
         #         dataloader=dataloaders['val'],
         #         config=config,
-        #         device='cuda',
+        #         device=device,
         #         bin_size=float('inf'),
         #     )
 
@@ -364,7 +376,7 @@ def main(args):
         #         model=model,
         #         dataloader=dataloaders['val'],
         #         config=config,
-        #         device='cuda',
+        #         device=device,
         #         bin_size=float('inf'),
         #     )
 
@@ -379,7 +391,7 @@ def main(args):
         #         model=model,
         #         dataloader=dataloaders['train'],
         #         config=config,
-        #         device='cuda',
+        #         device=device,
         #         bin_size=float('inf'),
         #     )
 

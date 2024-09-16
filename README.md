@@ -1,6 +1,12 @@
 # Enhancing RGB-D Segmentation in the Presence of Out-of-Distribution Modalities
 
 
+For macbook
+conda env create -f environment_mac.yml
+
+pip install -r requirements.txt
+
+
 ## Functionality
 
 Show depth estimation
