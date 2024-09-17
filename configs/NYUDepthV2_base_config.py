@@ -102,7 +102,7 @@ def add_path(path):
         sys.path.insert(0, path)
 add_path(osp.join(C.root_dir))
 
-C.checkpoint_dir = 'checkpoints_fgbg\\checkpoints_fgbg_spacing_CMXb2'
+C.checkpoint_dir = 'checkpoints\\NYUDepthv2'
 C.log_dir = osp.abspath(osp.join(C.checkpoint_dir, C.dataset_name + '_' + C.backbone))
 C.tb_dir = osp.abspath(osp.join(C.log_dir, "tb"))
 C.log_dir_link = C.log_dir
