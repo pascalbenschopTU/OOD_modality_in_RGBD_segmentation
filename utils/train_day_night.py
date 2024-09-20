@@ -5,6 +5,8 @@ Created on Thu Sep 12 13:37:37 2019 by Attila Lengyel - attila@lengyel.nl
 
 import sys
 import os
+
+import torch.utils
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(root_dir)
 
@@ -38,9 +40,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_model_weights(model, dataset='cityscapes'):
     if dataset == 'cityscapes':
-        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-102001_depth\epoch_60_miou_58.575.pth"
-        rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240906-153744_rgb\epoch_60_miou_69.303.pth"
-        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-135905_rgbd\epoch_60_miou_73.002.pth"
+        # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-102001_depth\epoch_60_miou_58.575.pth"
+        # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-085437\epoch_60_miou_62.949.pth"
+        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-081408\epoch_60_miou_64.263.pth"
+        # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240906-153744_rgb\epoch_60_miou_69.303.pth"
+        rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-160023\epoch_60_miou_75.181.pth"
+        # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-135905_rgbd\epoch_60_miou_73.002.pth"
+        # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-092117\epoch_60_miou_76.32.pth"
+        # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-164033\epoch_60_miou_77.378.pth"
+        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-155524\epoch_50_miou_76.256.pth"
     elif dataset == 'nyu':
         depth_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-182309_depth\epoch_100_miou_35.249.pth"
         rgb_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-203359_rgb\epoch_100_miou_43.123.pth"
@@ -101,13 +109,6 @@ def main(args):
         testset_nd = NighttimeDrivingDataset(nd_path, transforms=test_trans)
         testset_dz = DarkZurichDataset(dz_path, transforms=test_trans)
 
-        dataloaders = {}
-        dataloaders['train'] = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
-        dataloaders['val'] = torch.utils.data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
-        dataloaders['test_day'] = torch.utils.data.DataLoader(testset_day, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
-        dataloaders['test_nd'] = torch.utils.data.DataLoader(testset_nd, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
-        dataloaders['test_dz'] = torch.utils.data.DataLoader(testset_dz, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
-
         num_classes = len(CityscapesExt.validClasses)
 
         # Define model, loss, optimizer and scheduler
@@ -138,6 +139,13 @@ def main(args):
             "batch_size": 4,
         })
 
+        dataloaders = {}
+        dataloaders['train'] = torch.utils.data.DataLoader(trainset, batch_size=config.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
+        dataloaders['val'] = torch.utils.data.DataLoader(valset, batch_size=config.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+        dataloaders['test_day'] = torch.utils.data.DataLoader(testset_day, batch_size=config.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+        dataloaders['test_nd'] = torch.utils.data.DataLoader(testset_nd, batch_size=config.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+        dataloaders['test_dz'] = torch.utils.data.DataLoader(testset_dz, batch_size=config.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+
         model = ModelWrapper(
             config=config,
             criterion=criterion,
@@ -145,7 +153,7 @@ def main(args):
             pretrained=True,
         )
 
-        if args.mode != 'train':
+        if args.mode != 'train' and os.path.exists("cityscapes_training_ood_scores.json"):
             model.set_ood_scores("cityscapes_training_ood_scores.json")
     
     elif args.dataset == 'nyu':
@@ -173,39 +181,39 @@ def main(args):
             norm_layer=nn.BatchNorm2d,
             pretrained=True,
         )
-        if args.mode != 'train':
+        if args.mode != 'train' and os.path.exists("nyud_training_ood_scores.json"):
             model.set_ood_scores("nyud_training_ood_scores.json")
 
     if args.mode == 'train':
         if args.tune_hyperparameters:
             # Split train dataloader into train and val
             train_dataset = dataloaders['train'].dataset
-            train_dataset_subset, val_dataset_subset = torch.utils.data.random_split(
-                train_dataset,
-                [int(0.4 * len(train_dataset)), len(train_dataset) - int(0.4 * len(train_dataset))]
-            )
-        
-            # Tune hyperparameters
-            hyperparameter_config = tune_hyperparameters(
-                config,
-                train_dataset_subset,
-                train_callback=train_model_from_config,
-                num_samples=1,
-                max_num_epochs=1,
-            )
+            
+            if args.hyperparameter_path is not None:
+                with open(args.hyperparameter_path, "r") as f:
+                    hyperparameter_config = json.load(f)
+            else:
+                # Tune hyperparameters
+                hyperparameter_config = tune_hyperparameters(
+                    config,
+                    train_dataset,
+                    train_callback=train_model_from_config,
+                    num_samples=20,
+                    max_num_epochs=3,
+                )
+
+                checkpoint_path = config.log_dir
+                if not os.path.exists(checkpoint_path):
+                    os.makedirs(checkpoint_path, exist_ok=True)
+                time_date = time.strftime("%Y%m%d-%H%M%S")
+                with open(f"{checkpoint_path}/hyperparameters_{time_date}.json", "w") as f:
+                    json.dump(hyperparameter_config, f)
 
             config["lr"] = hyperparameter_config["lr"]
             config["batch_size"] = hyperparameter_config["batch_size"]
             config["lr_power"] = hyperparameter_config["lr_power"]
             config["momentum"] = hyperparameter_config["momentum"]
             config["weight_decay"] = hyperparameter_config["weight_decay"]
-
-            checkpoint_path = config.log_dir
-            if not os.path.exists(checkpoint_path):
-                os.makedirs(checkpoint_path, exist_ok=True)
-            time_date = time.strftime("%Y%m%d-%H%M%S")
-            with open(f"{checkpoint_path}/hyperparameters_{time_date}.json", "w") as f:
-                json.dump(hyperparameter_config, f)
         
         train_model_from_config(config=config, train_loader=dataloaders['train'], val_loader=dataloaders['val'])
     elif args.mode == 'test':
@@ -245,21 +253,12 @@ def main(args):
             torch.cuda.empty_cache()
             torch.cuda.manual_seed(0)
 
-        model2 = ModelWrapper(
-            config=config,
-            criterion=criterion,
-            norm_layer=nn.BatchNorm2d,
-            pretrained=True,
-        )
-        model2.to(device)
-        load_model_weights(model2, args.dataset)
-        
-        model2.eval()
+        model.eval()
 
         with torch.no_grad():
 
             evaluator2 = evaluate_with_loader(
-                model=model2,
+                model=model,
                 dataloader=dataloaders['test_nd'],
                 config=config,
                 device=device,
@@ -276,19 +275,11 @@ def main(args):
             torch.cuda.empty_cache()
             torch.cuda.manual_seed(0)
 
-        model3 = ModelWrapper(
-            config=config,
-            criterion=criterion,
-            norm_layer=nn.BatchNorm2d,
-            pretrained=True,
-        )
-        model3.to(device)
-        load_model_weights(model3, args.dataset)
-        model3.eval() 
+        model.eval()
 
         with torch.no_grad():
             evaluator3 = evaluate_with_loader(
-                model=model3,
+                model=model,
                 dataloader=dataloaders['test_dz'],
                 config=config,
                 device=device,
@@ -362,17 +353,17 @@ def main(args):
         #     device=device,
         # )
 
-        test_property_shift(
-            config=config,
-            property_values=[0.5, 0.4, 0.3, 0.2, 0.1, 0.0],
-            model=model,
-            dataloader=dataloaders['val'],
-            property_name='noise',
-            origin_directory_path=r"datasets\NYUDepthv2\RGB_original",
-            destination_directory_path=r"datasets\NYUDepthv2\RGB",
-            split="test",
-            device=device,
-        )
+        # test_property_shift(
+        #     config=config,
+        #     property_values=[0.5, 0.4, 0.3, 0.2, 0.1, 0.0],
+        #     model=model,
+        #     dataloader=dataloaders['val'],
+        #     property_name='noise',
+        #     origin_directory_path=r"datasets\NYUDepthv2\RGB_original",
+        #     destination_directory_path=r"datasets\NYUDepthv2\RGB",
+        #     split="test",
+        #     device=device,
+        # )
 
         # test_property_shift(
         #     config=config,
@@ -403,7 +394,7 @@ def main(args):
 
         
         # with torch.no_grad():
-        #     evaluator = evaluate_ood_scores_with_loader(
+        #     evaluator = evaluate_with_loader(
         #         model=model,
         #         dataloader=dataloaders['val'],
         #         config=config,
@@ -416,20 +407,20 @@ def main(args):
         #     with open('results.txt', 'a') as f:
         #         f.write(f"validation results: {evaluator.to_string()} \n")
 
-        
-        # with torch.no_grad():
-        #     evaluator = evaluate_with_loader(
-        #         model=model,
-        #         dataloader=dataloaders['train'],
-        #         config=config,
-        #         device=device,
-        #         bin_size=float('inf'),
-        #     )
+        model.training_data_filename = "cityscapes_training_ood_scores.json"
+        with torch.no_grad():
+            evaluator = evaluate_with_loader(
+                model=model,
+                dataloader=dataloaders['train'],
+                config=config,
+                device=device,
+                bin_size=float('inf'),
+            )
 
-        #     print("val miou: ", evaluator.miou)
+            print("val miou: ", evaluator.miou)
 
-        #     with open('results_train.txt', 'a') as f:
-        #         f.write(f"validation results: {evaluator.to_string()} \n")
+            with open('results_train.txt', 'a') as f:
+                f.write(f"validation results: {evaluator.to_string()} \n")
 
 
 if __name__ == '__main__':
@@ -473,6 +464,8 @@ if __name__ == '__main__':
                         help='Dataset to use. Either "cityscapes" or "nyu"')
     parser.add_argument('-th', '--tune-hyperparameters', action='store_true', default=False,
                         help='Tune hyperparameters')
+    parser.add_argument('-hp', '--hyperparameter-path', type=str, default=None,
+                        help='Path to hyperparameters file')
     args = parser.parse_args()
 
     main(args)

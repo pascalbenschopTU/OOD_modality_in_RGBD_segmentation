@@ -307,9 +307,9 @@ def evaluate(model, dataloader, config, device, bin_size=1):
         depth_evaluator = Evaluator(n_classes, bin_size=bin_size, ignore_index=config.background)
 
     for i, minibatch in enumerate(tqdm(dataloader, dynamic_ncols=True)):
-        images = minibatch["data"][0]
-        labels = minibatch["label"][0]
-        modal_xs = minibatch["modal_x"][0]
+        images = minibatch["data"]
+        labels = minibatch["label"]
+        modal_xs = minibatch["modal_x"]
 
         if len(labels.shape) == 2:
             labels = labels.unsqueeze(0)
@@ -368,7 +368,6 @@ def evaluate_with_loader(model, dataloader, config, device, bin_size):
             images = minibatch["data"]
             labels = minibatch["label"]
             modal_xs = minibatch["modal_x"]
-            # print("images shape: ", images.shape, "minibatch shape: ", minibatch["data"])
 
             if len(labels.shape) == 2:
                 labels = labels.unsqueeze(0)

@@ -50,14 +50,37 @@ def update_config_with_hyperparameters(
 
     return config
 
+def get_dataloaders(train_dataset, batch_size, dataset_split=0.1, train_split=0.8):
+    # Create a subset of the dataset for faster training
+    subset_length = int(dataset_split * len(train_dataset))
+    train_dataset_subset, _ = torch.utils.data.random_split(
+        train_dataset,
+        [subset_length, len(train_dataset) - subset_length]
+    )
+
+    # Split the subset into training and validation sets
+    train_length = int(train_split * len(train_dataset_subset))
+    val_length = len(train_dataset_subset) - train_length
+    train_dataset_split, val_dataset_split = torch.utils.data.random_split(
+        train_dataset_subset, 
+        [train_length, val_length]
+    )
+
+    # Create DataLoaders for the training and validation sets
+    train_loader = DataLoader(train_dataset_split, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset_split, batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader
+
 def train_setup(
         hyperparameters,
         config, 
-        train_loader, 
-        val_loader, 
+        train_dataset,
         num_epochs=5, 
         train_callback=None
     ):
+    train_loader, val_loader = get_dataloaders(train_dataset, config.batch_size)
+
     config = update_config_with_hyperparameters(hyperparameters, config, num_epochs, len(train_loader), len(val_loader))
     kwargs = {
         "is_tuning": True,
@@ -135,23 +158,14 @@ def tune_hyperparameters(
 
     ray.init()
 
-    # Split the dataset into training and validation sets
-    train_dataset_split, val_dataset_split = torch.utils.data.random_split(
-        train_dataset, 
-        [int(0.8 * len(train_dataset)), len(train_dataset) - int(0.8 * len(train_dataset))]
-    )
-
-    # Create DataLoaders for the training and validation sets
-    train_loader = DataLoader(train_dataset_split, batch_size=4, shuffle=True)
-    val_loader = DataLoader(val_dataset_split, batch_size=4, shuffle=False)
+   
 
     tuner = tune.Tuner(
         tune.with_resources(
             tune.with_parameters(
                 train_setup, 
                 config=config,
-                train_loader=train_loader,
-                val_loader=val_loader,
+                train_dataset=train_dataset,
                 num_epochs=max_num_epochs,
                 train_callback=train_callback,                
             ),

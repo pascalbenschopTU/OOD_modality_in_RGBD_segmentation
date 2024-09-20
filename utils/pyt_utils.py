@@ -17,6 +17,9 @@ def calculate_ood_score(output, t: Optional[float] = 1.0):
     # Energy based score
     return -t * torch.logsumexp(output / t, dim=1)
 
+    # # Max softmax score
+    # return torch.max(torch.softmax(output, dim=1), dim=1).values
+
 class LogFormatter(logging.Formatter):
     log_fout = None
     date_full = '[%(asctime)s %(lineno)d@%(filename)s:%(name)s] '

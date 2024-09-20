@@ -64,7 +64,7 @@ C.optimizer = 'AdamW'
 
 """Train Config"""
 C.start_epoch = 1
-C.lr = 8e-5
+C.lr = 1e-4
 C.lr_power = 0.9
 C.momentum = 0.9
 C.weight_decay = 0.01
@@ -75,7 +75,7 @@ C.nepochs = 60
 C.niters_per_epoch = C.num_train_imgs // C.batch_size  + 1
 C.num_workers = 1
 C.train_scale_array = [0.5, 0.75, 1, 1.25, 1.5, 1.75]
-C.warm_up_epoch = 10
+C.warm_up_epoch = 3
 
 C.fix_bias = True
 C.bn_eps = 1e-3
