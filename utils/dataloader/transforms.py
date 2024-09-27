@@ -246,36 +246,28 @@ def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384
         depth_image = TF.to_pil_image(depth_image)
         mask = TF.to_pil_image(mask[0,:,:])
 
-    # print depth values
-    # print(f"min: {np.min(np.array(depth_image))}, max: {np.max(np.array(depth_image))}")
-
     # Apply noise, blur, depth range augmentations
     if depth_aug:
         min_depth = 0
         max_depth = 255
 
-        if random.randint(0,1) > 0.75:
-            # Apply random noise
-            depth_image = np.array(depth_image, dtype=np.uint8)
-            noise = np.random.normal(0, 0.1, depth_image.shape)
-            depth_image = depth_image + (noise * max_depth)
-            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
-            depth_image = TF.to_pil_image(depth_image)
+        # {'occlusion_prob': 0.03899435843568351, 'noise_std': 0.0984376379069491}
+        noise_std = 0.0984376379069491
+        occlusion_prob = 0.03899435843568351
+        depth_image = TF.to_tensor(depth_image)
 
-        if random.randint(0,1) > 0.75:
-            # Apply random blur
-            depth_image = np.array(depth_image, dtype=np.uint8)
-            depth_image = cv2.GaussianBlur(depth_image, (5,5), 0)
-            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
-            depth_image = TF.to_pil_image(depth_image)
+        if np.random.rand() < occlusion_prob:
+            mask = torch.rand_like(depth_image) < 0.1
+            depth_image[mask] = 0
 
-        if random.randint(0,1) > 0.75:
-            # Apply random depth range augmentation
-            depth_image = np.array(depth_image, dtype=np.uint8)
-            depth_image = depth_image + (np.random.uniform(-0.1, 0.1) * max_depth)
-            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
-            depth_image = TF.to_pil_image(depth_image)
-    
+        noise = torch.randn_like(depth_image) * noise_std * max_depth
+        noise = noise.clamp(0, 255).byte()
+        depth_image = depth_image + noise
+        depth_image = depth_image.clamp(0, 255).byte()
+
+        depth_image = TF.to_pil_image(depth_image)
+
+        
     # H-flip
     if pflip == True and hflip == True:
         image = TF.hflip(image)
