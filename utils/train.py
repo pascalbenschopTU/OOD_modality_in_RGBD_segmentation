@@ -18,7 +18,7 @@ sys.path.append("../UsefullnessOfDepth")
 from utils.dataloader.dataloader import get_train_loader,get_val_loader
 from utils.dataloader.RGBXDataset import RGBXDataset
 from utils.lr_policy import WarmUpPolyLR
-from utils.evaluate_models import evaluate, save_results
+from utils.evaluate_models import save_results, evaluate_with_loader
 # from utils.hyperparameter_tuning import tune_hyperparameters
 from utils.update_config import update_config
 from utils.model_wrapper import ModelWrapper
@@ -167,26 +167,16 @@ def train_model_from_config(config, **kwargs):
         tb.add_scalar('train/loss', sum_loss / len(pbar), epoch)
         tb.add_scalar('train/lr', lr, epoch)
 
-        if (epoch % config.checkpoint_step == 0 and epoch > int(config.checkpoint_start_epoch)) or epoch == config.nepochs:
+        if (epoch % config.checkpoint_step == 0 and epoch > int(config.checkpoint_start_epoch)) or epoch == config.nepochs or epoch == 1:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             with torch.no_grad():
                 model.eval()
-                metrics, rgb_metrics, depth_metrics = evaluate(model, val_loader, config, device, bin_size=float('inf'))
+                metrics = evaluate_with_loader(model, val_loader, config, device, bin_size=float('inf'))
                 miou = metrics.miou
                 mious = [miou]
                 print('macc: ', metrics.macc, 'mf1: ', metrics.mf1, 'miou: ', metrics.miou)
-                if use_aux:
-                    aux_miou = rgb_metrics.miou
-                    mious.append(aux_miou)
-                    print('aux_miou: ', aux_miou)
-                if model.is_token_fusion:
-                    rgb_miou = rgb_metrics.miou
-                    depth_miou = depth_metrics.miou
-                    mious.append(rgb_miou)
-                    mious.append(depth_miou)
-                    print('rgb_miou: ', rgb_miou, 'depth_miou: ', depth_miou)
 
                 if not is_tuning:
                     if miou > best_miou:
@@ -194,13 +184,13 @@ def train_model_from_config(config, **kwargs):
                         print('saving model...')
                         save_checkpoint(model, optimizer, epoch, current_idx, os.path.join(config.log_dir, f"epoch_{epoch}_miou_{miou}.pth"))
                     
-                    save_results(config.log_dir + '/results.txt', metrics, 0, rgb_metrics, depth_metrics)
+                    save_results(config.log_dir + '/results.txt', metrics, 0)
                 
                 tb.add_scalar('val/macc', metrics.macc, epoch)
                 tb.add_scalar('val/mf1', metrics.mf1, epoch)
                 tb.add_scalar('val/miou', miou, epoch)
 
-                del metrics, rgb_metrics, depth_metrics
+                del metrics
 
             ray_callback = kwargs.get('ray_callback', None)
             if ray_callback is not None:

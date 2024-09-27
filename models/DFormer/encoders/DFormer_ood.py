@@ -2,6 +2,7 @@ import warnings
 from collections import OrderedDict
 from copy import deepcopy
 from functools import partial
+import json
 
 import torch
 import torch.nn as nn
@@ -15,6 +16,7 @@ from mmcv.cnn.bricks.transformer import FFN, build_dropout
 #                          load_state_dict)
 from mmengine.model.base_module import BaseModule
 from mmengine.runner.checkpoint import load_state_dict
+import os
 
 
 class LayerNorm(nn.Module):
@@ -183,6 +185,7 @@ class DFormer(BaseModule):
                  mlp_ratios=[8, 8, 4, 4], num_heads=(2, 4, 10, 16),last_block=[50,50,50,50], drop_path_rate=0.1, init_cfg=None, x_channels=3, x_e_channels=1):
         super().__init__()
         print(drop_path_rate)
+        self.bn_stats = {}
         self.dims = dims
         self.depths = depths
         self.init_cfg = init_cfg
@@ -242,12 +245,6 @@ class DFormer(BaseModule):
             self.stages.append(stage)
             cur += depths[i]
 
-       
-        # for i in out_indices:
-        #     layer = LayerNorm(dims[i], eps=1e-6, data_format="channels_first")
-        #     layer_name = f'norm{i}'
-        #     self.add_module(layer_name, layer)
-
 
     def init_weights(self,pretrained):
         _state_dict=torch.load(pretrained, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -276,7 +273,7 @@ class DFormer(BaseModule):
         
         load_state_dict(self, state_dict, strict=False)
 
-    def forward(self, x,x_e):
+    def forward(self, x,x_e, collect_bn_stats=False, test_mode=False):
         if x_e is None:
             x_e=x
         if len(x.shape)==3:
@@ -293,15 +290,69 @@ class DFormer(BaseModule):
         for i in range(4):
             x = self.downsample_layers[i](x)
             x_e = self.downsample_layers_e[i](x_e)
+
+            if collect_bn_stats:
+                self.store_bn_statistics(i)
                 
             x = x.permute(0, 2, 3, 1)
             x_e = x_e.permute(0, 2, 3, 1)
             for blk in self.stages[i]:
+                x_res,x_e_res=x,x_e
                 x,x_e = blk(x,x_e)
+
             x = x.permute(0, 3, 1, 2)
             x_e = x_e.permute(0, 3, 1, 2)
             outs.append(x)
         return outs, None
+
+    def store_bn_statistics(self, layer_index):
+        """Store BN statistics for both RGB (downsample_layers) and depth (downsample_layers_e)."""
+        # Collect statistics for RGB features from downsample_layers
+        self.collect_bn_layer_statistics(self.downsample_layers[layer_index], f"bn_rgb_{layer_index}")
+        
+        # Collect statistics for depth features from downsample_layers_e
+        self.collect_bn_layer_statistics(self.downsample_layers_e[layer_index], f"bn_depth_{layer_index}")
+
+        self.save_bn_statistics()
+
+    def collect_bn_layer_statistics(self, layer, stat_key_prefix):
+        """Helper function to collect statistics from a given downsample layer."""
+        # Find all BatchNorm layers in the provided downsample layer
+        for name, module in layer.named_modules():
+            if isinstance(module, nn.BatchNorm2d):
+                # Compute the mean of running mean and variance
+                mean_running_mean = module.running_mean.detach().cpu().mean().item()
+                mean_running_var = module.running_var.detach().cpu().mean().item()
+
+                # Initialize the dictionary key if it doesn't exist
+                key = f"{stat_key_prefix}_{name}"
+                if key not in self.bn_stats:
+                    self.bn_stats[key] = {"mean": [], "var": []}
+
+                # Append the computed means and variances to their respective arrays if not already there
+                # Ensuring no duplication
+                if not self.bn_stats[key]["mean"] or self.bn_stats[key]["mean"][-1] != mean_running_mean:
+                    self.bn_stats[key]["mean"].append(mean_running_mean)
+                if not self.bn_stats[key]["var"] or self.bn_stats[key]["var"][-1] != mean_running_var:
+                    self.bn_stats[key]["var"].append(mean_running_var)
+
+    def save_bn_statistics(self, filepath="bn_statistics.json"):
+        """Function to save BN statistics to a JSON file."""
+        # If the file exists, load existing data to merge with new data
+        if os.path.exists(filepath):
+            with open(filepath, "r") as f:
+                existing_data = json.load(f)
+
+                self.bn_stats.update(existing_data)
+        
+        # Save the merged statistics back to the JSON file
+        with open(filepath, "w") as f:
+            json.dump(self.bn_stats, f, indent=4)
+
+    def load_bn_statistics(self, filepath="bn_statistics.json"):
+        """Function to load BN statistics from a JSON file."""
+        with open(filepath, "r") as f:
+            self.bn_stats = json.load(f)
 
 def DFormer_Tiny(pretrained=False, **kwargs):   # 81.5
     model = DFormer(dims=[32, 64, 128, 256], mlp_ratios=[8, 8, 4, 4], depths=[3, 3, 5, 2], num_heads=[1, 2, 4, 8], windows=[0, 7, 7, 7], **kwargs)

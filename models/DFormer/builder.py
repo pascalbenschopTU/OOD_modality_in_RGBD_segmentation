@@ -62,6 +62,19 @@ class EncoderDecoder(nn.Module):
         self.norm_layer = norm_layer
         self.cfg = cfg
         
+        # if cfg.backbone == 'DFormer-Large':
+        #     from .encoders.DFormer import DFormer_Large as backbone
+        #     self.channels=[96, 192, 288, 576]
+        # elif cfg.backbone == 'DFormer-Base':
+        #     from .encoders.DFormer import DFormer_Base as backbone
+        #     self.channels=[64, 128, 256, 512]
+        # elif cfg.backbone == 'DFormer-Small':
+        #     from .encoders.DFormer import DFormer_Small as backbone
+        #     self.channels=[64, 128, 256, 512]
+        # elif cfg.backbone == 'DFormer-Tiny':
+        #     from .encoders.DFormer import DFormer_Tiny as backbone
+        #     self.channels=[32, 64, 128, 256]
+
         if cfg.backbone == 'DFormer-Large':
             from .encoders.DFormer import DFormer_Large as backbone
             self.channels=[96, 192, 288, 576]
@@ -158,6 +171,7 @@ class EncoderDecoder(nn.Module):
         """Encode images with backbone and decode into a semantic segmentation
         map of the same size as input."""
         orisize = rgb.shape
+        # x = self.backbone(rgb, modal_x, collect_bn_stats=True)
         x = self.backbone(rgb, modal_x)
         if self.cfg.decoder == 'nl_near_far':
             out = self.decode_head.forward(x[0], modal_x=modal_x)

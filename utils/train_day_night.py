@@ -16,7 +16,7 @@ from dataloader.transforms import train_trans, test_trans
 from datasets.cityscapes_ext import CityscapesExt
 from datasets.nighttime_driving import NighttimeDrivingDataset
 from datasets.dark_zurich import DarkZurichDataset
-# from models.refinenet import RefineNet
+from models.refinenet import RefineNet
 from model_wrapper import ModelWrapper
 from train import train_model_from_config
 from evaluate_models import evaluate_with_loader
@@ -42,13 +42,19 @@ def load_model_weights(model, dataset='cityscapes'):
     if dataset == 'cityscapes':
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-102001_depth\epoch_60_miou_58.575.pth"
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-085437\epoch_60_miou_62.949.pth"
-        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-081408\epoch_60_miou_64.263.pth"
+        # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-081408\epoch_60_miou_64.263.pth"
+        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-132207\epoch_27_miou_66.829.pth"
+        # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240925-114529\epoch_29_miou_65.675.pth"
         # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240906-153744_rgb\epoch_60_miou_69.303.pth"
-        rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-160023\epoch_60_miou_75.181.pth"
+        # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-160023\epoch_60_miou_75.181.pth"
+        # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-183447\epoch_30_miou_72.189.pth"
+        rgb_model_weights = r"checkpoints\pretrained\cityscapes_w.pth.tar"
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-135905_rgbd\epoch_60_miou_73.002.pth"
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-092117\epoch_60_miou_76.32.pth"
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-164033\epoch_60_miou_77.378.pth"
-        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-155524\epoch_50_miou_76.256.pth"
+        # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240920-134103\epoch_30_miou_76.198.pth"
+        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-160040\epoch_30_miou_74.369.pth"
+        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240926-191853\epoch_27_miou_62.719.pth"
     elif dataset == 'nyu':
         depth_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-182309_depth\epoch_100_miou_35.249.pth"
         rgb_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-203359_rgb\epoch_100_miou_43.123.pth"
@@ -71,7 +77,8 @@ def load_model_weights(model, dataset='cityscapes'):
 
         model.model.load_state_dict(remove_prefix_from_state_dict(torch.load(rgbd_model_weights)['model'], 'model.'), strict=True)
         model.depth_model.load_state_dict(remove_prefix_from_state_dict(torch.load(depth_model_weights)['model'], 'model.'), strict=True)
-        model.rgb_model.load_state_dict(remove_prefix_from_state_dict(torch.load(rgb_model_weights)['model'], 'model.'), strict=True)
+        # model.rgb_model.load_state_dict(remove_prefix_from_state_dict(torch.load(rgb_model_weights)['model'], 'model.'), strict=True)
+        model.rgb_model.load_state_dict(remove_prefix_from_state_dict(torch.load(rgb_model_weights)['model_state_dict'], 'module.'), strict=True)
         print("Model weights loaded")
     except Exception as e:
         print(e)
@@ -130,13 +137,13 @@ def main(args):
         config.update(model_config)
         config.update({
             "num_classes": num_classes,
-            "nepochs": 60,
-            "x_channels": 3,
+            "nepochs": 30,
+            "x_channels": 1,
             "x_e_channels": 1,
             "num_train_imgs": len(trainset),
             "num_eval_imgs": len(valset),
             "background": CityscapesExt.voidClass,
-            "batch_size": 4,
+            "batch_size": 8,
         })
 
         dataloaders = {}
@@ -234,19 +241,19 @@ def main(args):
 
         model.eval()
 
-        with torch.no_grad():
-            evaluator = evaluate_with_loader(
-                model=model,
-                dataloader=dataloaders['val'],
-                config=config,
-                device=device,
-                bin_size=float('inf'),
-            )
+        # with torch.no_grad():
+        #     evaluator = evaluate_with_loader(
+        #         model=model,
+        #         dataloader=dataloaders['val'],
+        #         config=config,
+        #         device=device,
+        #         bin_size=float('inf'),
+        #     )
 
-            print("val miou: ", evaluator.miou)
+        #     print("val miou: ", evaluator.miou)
 
-            with open('results.txt', 'a') as f:
-                f.write(f"validation results: {str(evaluator.miou)} \n")
+        #     with open('results.txt', 'a') as f:
+        #         f.write(f"validation results: {str(evaluator.miou)} \n")
 
         torch.manual_seed(0)
         if torch.cuda.is_available():
@@ -268,7 +275,8 @@ def main(args):
             print("test night miou: ", evaluator2.miou)
 
             with open('results.txt', 'a') as f:
-                f.write(f"night results: {str(evaluator2.miou)} \n")
+                classes = ', '.join([f"{iou:.1f}" for iou in evaluator2.ious])
+                f.write(f"night results: {str(evaluator2.miou)} classes: {classes}\n")
 
         torch.manual_seed(0)
         if torch.cuda.is_available():
@@ -289,7 +297,8 @@ def main(args):
             print("test dark zurich miou: ", evaluator3.miou)
 
             with open('results.txt', 'a') as f:
-                f.write(f"dark zurich results: {str(evaluator3.miou)} \n")
+                classes = ', '.join([f"{iou:.1f}" for iou in evaluator3.ious])
+                f.write(f"dark zurich results: {str(evaluator3.miou)} classes: {classes}\n")
 
     elif args.mode == 'adapt':
         model.to(device)

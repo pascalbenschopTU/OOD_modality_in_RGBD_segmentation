@@ -215,7 +215,7 @@ def plot_confusion_matrix(confusion_matrix, class_names, model_weights_dir, miou
     
     plt.savefig(result_file_name)
 
-def save_results(model_results_file, metric, num_params, rgb_metric=None, depth_metric=None):
+def save_results(model_results_file, metric, num_params):
     class_ious = "[" + " ".join([f"{iou:.1f}" for iou in metric.ious]) + "]"
 
 
@@ -226,137 +226,6 @@ def save_results(model_results_file, metric, num_params, rgb_metric=None, depth_
         if len(metric.bin_mious) > 1:
             f.write(f'bin_mious: {metric.bin_mious} ')
             f.write(f'bin_stdious: {metric.bin_stdious}\n')
-        if rgb_metric is not None and depth_metric is not None:
-            f.write(f'rgb_miou: {rgb_metric.miou:.2f}, depth_miou: {depth_metric.miou:.2f}\n')
-            if len(rgb_metric.bin_mious) > 1:
-                f.write(f'rgb_bin_mious: {rgb_metric.bin_mious} ')
-                f.write(f'rgb_bin_stdious: {rgb_metric.bin_stdious}\n')
-            if len(depth_metric.bin_mious) > 1:
-                f.write(f'depth_bin_mious: {depth_metric.bin_mious} ')
-                f.write(f'depth_bin_stdious: {depth_metric.bin_stdious}\n') 
-
-def get_scores_for_model(
-        model, 
-        config, 
-        model_weights, 
-        dataset=None, 
-        bin_size=1000,
-        x_channels=-1,
-        x_e_channels=-1, 
-        results_file="results.txt",
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-        create_confusion_matrix=True,
-        ignore_background=False,
-        return_metrics=False
-    ):
-    print("device: ", device)
-
-    # Load and configure model
-    config = load_config(config, dataset, x_channels, x_e_channels)
-
-    if ignore_background:
-        config.background = 0
-
-    # Initialize model
-    model = initialize_model(config, model_weights, device)
-    
-    # Get validation loader
-    val_loader, val_sampler = get_val_loader(None, RGBXDataset, config, 1)
-
-    metric, rgb_metric, depth_metric = evaluate(
-        model=model,
-        dataloader=val_loader,
-        config=config,
-        device=device,
-        bin_size=bin_size,
-    )
-
-    miou = metric.miou
-
-    # Plot confusion matrix
-    if create_confusion_matrix:
-        plot_confusion_matrix(metric.confusion_matrix, config.class_names, os.path.dirname(model_weights), miou)
-
-    # Save results
-    model_weights_dir = os.path.dirname(model_weights)
-    model_results_file = os.path.join(model_weights_dir, results_file)
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    extra_metrics = [metric.miou for metric in (rgb_metric, depth_metric) if metric is not None]
-    if len(extra_metrics) > 0:
-        miou = [miou] + extra_metrics
-
-    save_results(model_results_file, metric, num_params, rgb_metric, depth_metric)
-
-    if return_metrics:
-        return metric, rgb_metric, depth_metric
-    return miou
-   
-            
-@torch.no_grad()
-def evaluate(model, dataloader, config, device, bin_size=1):
-    model.eval()
-    n_classes = config.num_classes
-    evaluator = Evaluator(n_classes, bin_size=bin_size, ignore_index=config.background)
-
-    rgb_evaluator = None
-    depth_evaluator = None
-
-    if model.is_token_fusion or config.get('use_aux', False) or model.model_name == "HIDANet":
-        rgb_evaluator = Evaluator(n_classes, bin_size=bin_size, ignore_index=config.background)
-        depth_evaluator = Evaluator(n_classes, bin_size=bin_size, ignore_index=config.background)
-
-    for i, minibatch in enumerate(tqdm(dataloader, dynamic_ncols=True)):
-        images = minibatch["data"]
-        labels = minibatch["label"]
-        modal_xs = minibatch["modal_x"]
-
-        if len(labels.shape) == 2:
-            labels = labels.unsqueeze(0)
-
-        images = [images.to(device), modal_xs.to(device)]
-        labels = labels.to(device)
-        preds = model(images[0], images[1])
-        if model.is_token_fusion:
-            preds, masks = preds[0], preds[1]
-            preds_rgb = preds[0].softmax(dim=1)
-            preds_depth = preds[1].softmax(dim=1)
-            rgb_evaluator.add_batch(labels.cpu().numpy(), preds_rgb.argmax(1).cpu().numpy())
-            depth_evaluator.add_batch(labels.cpu().numpy(), preds_depth.argmax(1).cpu().numpy())
-
-            preds = preds[2] # Ensemble
-
-        if model.model_name == "HIDANet":
-            labels = labels.squeeze()
-            preds_rgb = preds[0].squeeze().sigmoid()
-            preds_depth = preds[1].squeeze().sigmoid()
-            # Convert sigmoid outputs to integers based on a threshold
-            preds_rgb_int = (preds_rgb > 0.5).int()
-            preds_depth_int = (preds_depth > 0.5).int()
-            rgb_evaluator.add_batch(labels.cpu().numpy(), preds_rgb_int.cpu().numpy())
-            depth_evaluator.add_batch(labels.cpu().numpy(), preds_depth_int.cpu().numpy())
-            preds = preds[2].squeeze().sigmoid() # Ensemble
-            # Convert ensemble predictions to integers
-            preds_int = (preds > 0.5).int()
-
-            evaluator.add_batch(labels.cpu().numpy(), preds_int.cpu().numpy())
-
-        if config.get('use_aux', False):
-            preds, aux_preds = preds[0], preds[1]
-            binary_labels = (labels > 0).long()
-            rgb_evaluator.add_batch(binary_labels.cpu().numpy(), aux_preds.softmax(1).argmax(1).cpu().numpy())
-
-        if not model.model_name == "HIDANet":
-            preds = preds.softmax(dim=1)
-
-            evaluator.add_batch(labels.cpu().numpy(), preds.argmax(1).cpu().numpy())
-
-    evaluator.calculate_results(ignore_class=config.background)
-    if rgb_evaluator is not None and depth_evaluator is not None:
-        rgb_evaluator.calculate_results(ignore_class=config.background)
-        depth_evaluator.calculate_results(ignore_class=config.background)
-        
-    return evaluator, rgb_evaluator, depth_evaluator
 
 
 def evaluate_with_loader(model, dataloader, config, device, bin_size):

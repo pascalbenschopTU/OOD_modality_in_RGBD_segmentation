@@ -49,8 +49,8 @@ C.class_names = ['unlabeled', 'car', 'person', 'bike', 'curve', 'car_stop', 'gua
 """Image Config"""
 # Background class is 0, set to -1 to ignore
 C.background = -1
-C.image_height = 400
-C.image_width = 400
+C.image_height = 1080
+C.image_width = 1920
 C.norm_mean = np.array([0.485, 0.456, 0.406])
 C.norm_std = np.array([0.229, 0.224, 0.225])
 
@@ -64,7 +64,7 @@ C.optimizer = 'AdamW'
 
 """Train Config"""
 C.start_epoch = 1
-C.lr = 1e-4
+C.lr = 8e-5
 C.lr_power = 0.9
 C.momentum = 0.9
 C.weight_decay = 0.01
@@ -80,8 +80,8 @@ C.warm_up_epoch = 3
 C.fix_bias = True
 C.bn_eps = 1e-3
 C.bn_momentum = 0.1
-C.drop_path_rate=0.1
-C.aux_rate =0.0
+C.drop_path_rate = 0.1
+C.aux_rate = 0.0
 
 """Eval Config"""
 C.eval_iter = 25
@@ -100,8 +100,8 @@ C.min_color_jitter = 0.7
 C.max_color_jitter = 1.3
 
 """Store Config"""
-C.checkpoint_start_epoch = 1 # 200
-C.checkpoint_step = 10
+C.checkpoint_start_epoch = 10 # 200
+C.checkpoint_step = 1
 
 """Path Config"""
 def add_path(path):

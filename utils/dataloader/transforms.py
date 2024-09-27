@@ -193,7 +193,7 @@ def normalize(img, mean, std):
 ### Data helpers
 ################################
 
-def test_trans(image, depth_image, mask=None, target_size=(512,1024)):
+def test_trans(image, depth_image, mask=None, target_size=(512,1024), mean=None, std=None):
     # Basic image pre-processing
     image = TF.resize(image, target_size, interpolation=1) # Resize, 1 for LANCZOS, 2 for BILINEAR
     depth_image = TF.resize(depth_image, target_size, interpolation=1) # Resize, 1 for LANCZOS, 2 for BILINEAR
@@ -202,13 +202,16 @@ def test_trans(image, depth_image, mask=None, target_size=(512,1024)):
     image = TF.to_tensor(image)
     depth_image = TF.to_tensor(depth_image)
 
+    if mean and std:
+        image = TF.normalize(image, mean, std)
+
     if mask:
         mask = TF.resize(mask, target_size, interpolation=0) # 0 for Image.NEAREST
         mask = np.array(mask, np.uint8) # PIL Image to numpy array
         mask = torch.from_numpy(mask) # Numpy array to tensor
     return image, depth_image, mask
 
-def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384,768), jitter=0.3, scale=0.3, hflip=True):
+def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384,768), jitter=0.3, scale=0.3, hflip=True, depth_aug=True):
     # Generate random parameters for augmentation
     bf = random.uniform(1-jitter,1+jitter)
     cf = random.uniform(1-jitter,1+jitter)
@@ -242,6 +245,36 @@ def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384
         image = TF.to_pil_image(image)
         depth_image = TF.to_pil_image(depth_image)
         mask = TF.to_pil_image(mask[0,:,:])
+
+    # print depth values
+    # print(f"min: {np.min(np.array(depth_image))}, max: {np.max(np.array(depth_image))}")
+
+    # Apply noise, blur, depth range augmentations
+    if depth_aug:
+        min_depth = 0
+        max_depth = 255
+
+        if random.randint(0,1) > 0.75:
+            # Apply random noise
+            depth_image = np.array(depth_image, dtype=np.uint8)
+            noise = np.random.normal(0, 0.1, depth_image.shape)
+            depth_image = depth_image + (noise * max_depth)
+            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
+            depth_image = TF.to_pil_image(depth_image)
+
+        if random.randint(0,1) > 0.75:
+            # Apply random blur
+            depth_image = np.array(depth_image, dtype=np.uint8)
+            depth_image = cv2.GaussianBlur(depth_image, (5,5), 0)
+            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
+            depth_image = TF.to_pil_image(depth_image)
+
+        if random.randint(0,1) > 0.75:
+            # Apply random depth range augmentation
+            depth_image = np.array(depth_image, dtype=np.uint8)
+            depth_image = depth_image + (np.random.uniform(-0.1, 0.1) * max_depth)
+            depth_image = np.clip(depth_image, min_depth, max_depth).astype(np.uint8)
+            depth_image = TF.to_pil_image(depth_image)
     
     # H-flip
     if pflip == True and hflip == True:
