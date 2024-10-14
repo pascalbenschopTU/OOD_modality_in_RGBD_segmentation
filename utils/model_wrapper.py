@@ -8,6 +8,10 @@ import numpy as np
 import copy
 import os
 import json
+import cv2
+
+from mmseg.apis import inference_model, init_model, show_result_pyplot, MMSegInferencer
+import mmcv
 
 # import the directory with the models "../UsefullnessOfDepth"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
@@ -17,7 +21,7 @@ from models.DFormer.builder import EncoderDecoder as DFormer
 from models.refinenet import RefineNet
 # from models_CMX.builder import EncoderDecoder as CMXmodel
 # from model_pytorch_deeplab_xception.deeplab import DeepLab
-# from models_segformer import SegFormer
+from models.Segformer import SegFormer
 # from model_TokenFusion.segformer import WeTr as TokenFusion
 # from models_Gemini.segformer import WeTr as Gemini
 # from model_HIDANet.model import HiDANet as HIDANet
@@ -73,16 +77,29 @@ class ModelWrapper(nn.Module):
             # self.rgb_model = DFormer(cfg=rgb_config, criterion=self.criterion, norm_layer=self.norm_layer)
 
             # self.rgb_model = RefineNet(self.config.num_classes, pretrained=self.pretrained, invariant="W")
-            # # self.rgb_model = RefineNet(self.config.num_classes, pretrained=self.pretrained, invariant=None)
+            # # # self.rgb_model = RefineNet(self.config.num_classes, pretrained=self.pretrained, invariant=None)
 
             # depth_config = copy.deepcopy(self.config)
             # depth_config.x_channels = 1
             # depth_config.x_e_channels = 1
+    
             # self.depth_model = DFormer(cfg=depth_config, criterion=self.criterion, norm_layer=self.norm_layer)
 
-        elif self.model_name == "DeepLab":
-            self.model = DeepLab(cfg=self.config, criterion=self.criterion, norm_layer=self.norm_layer)
+        elif self.model_name == "RefineNet":
+            self.model = RefineNet(self.config.num_classes, pretrained=self.pretrained, invariant="W")
             self.params_list = group_weight([], self.model, self.norm_layer, self.config.lr)
+        elif self.model_name == "DepthAnything":
+            config_file = 'depth_anything_large_mask2former_16xb1_80k_cityscapes_896x896.py'
+            checkpoint_file = 'cityscapes_vitl_mIoU_86.4.pth'
+            # checkpoint_file = None
+            # config_file = 'depth_anything_small_mask2former_16xb1_80k_cityscapes_896x896.py'
+            # checkpoint_file = r"depth_anything_small\iter_40000.pth"
+
+            # config_file = 'depth_anything_large_mask2former_16xb1_80k_cityscapes_896x896_freeze.py'
+            # checkpoint_file = r"depth_anything_v2\best_mIoU_iter_15000.pth"
+            self.model = init_model(config_file, checkpoint_file, device='cuda:0')
+            self.params_list = group_weight([], self.model, self.norm_layer, self.config.lr)
+            self.is_rgb_model = True
         elif self.model_name == "TokenFusion":
             self.is_token_fusion = True
             self.model = TokenFusion(cfg=self.config, pretrained=self.pretrained)
@@ -107,7 +124,7 @@ class ModelWrapper(nn.Module):
         
         self.is_rgb_model = len(signature(self.model.forward).parameters) == 1
         print("Model: ", self.model_name, " BackBone: ", self.backbone, " Pretrained: ", self.pretrained, " RGB Model: ", self.is_rgb_model)
-    
+
     # Assumes the model takes in RGB in the shape (B, 3, H, W) and depth in the shape (B, 1, H, W)
     # Where B is the batch size, H is the height and W is the width of the input images
     def forward(self, x, x_e):
@@ -123,7 +140,27 @@ class ModelWrapper(nn.Module):
         
         # Check if self.model has a forward function that accepts only x or also x_e
         if self.is_rgb_model:
-            output = self.model(x)
+            if self.config.x_channels == 1 and self.config.x_e_channels == 1:
+                x_e = torch.cat([x_e, x_e, x_e], dim=1)  # Shape: [batch_size, 3, 512, 1024]
+
+                output = self.model(x_e)
+            else:
+                output = self.model(x)
+        elif self.model_name == "DepthAnything":
+            batch_img_metas = []
+            for i in range(x.shape[0]):
+                img_meta = {
+                    'filename': f'img_{i}.png',
+                    'ori_shape': x.shape[2:],  # Original shape of the image
+                    'img_shape': x.shape[2:],   # Processed shape of the image
+                    'pad_shape': x.shape[2:],   # Padded shape if any (here, same as img_shape)
+                    'scale_factor': 1.0,           # Scale factor if applicable
+                    'flip': False,                 # Whether the image was flipped
+                }
+                batch_img_metas.append(img_meta)
+            
+            # x = torch.cat([x_e, x_e, x_e], dim=1)
+            output = self.model.encode_decode(x, batch_img_metas)
         else:
             output = self.model(x, x_e)
         
@@ -140,22 +177,9 @@ class ModelWrapper(nn.Module):
         ood_scores_depth = calculate_ood_score(output_depth)
         ood_scores_ensemble = calculate_ood_score(output)
 
-        # print(f"ood_scores_rgb shape: {ood_scores_rgb.shape} ood_scores_depth shape: {ood_scores_depth.shape} ood_scores_ensemble shape: {ood_scores_ensemble.shape}")
-
-        # # Assume you already calculated these
-        # mean_ood_score_rgbd = ood_scores_ensemble.mean()  # for rgbd output
-        # mean_ood_score_rgb = ood_scores_rgb.mean()    # for rgb output
-        # mean_ood_score_depth = ood_scores_depth.mean()  # for depth output
-
-        # print(f"mean_ood_score_rgbd: {mean_ood_score_rgbd} mean_ood_score_rgb: {mean_ood_score_rgb} mean_ood_score_depth: {mean_ood_score_depth}")
-
         mean_ood_score_rgbd = ood_scores_ensemble.mean(dim=(1, 2))  # for rgbd output
         mean_ood_score_rgb = ood_scores_rgb.mean(dim=(1, 2))    # for rgb output
         mean_ood_score_depth = ood_scores_depth.mean(dim=(1, 2)) # for depth output
-
-        
-
-        # print(f"other mean_ood_score_rgbd: {mean_ood_score_rgbd} mean_ood_score_rgb: {mean_ood_score_rgb} mean_ood_score_depth: {mean_ood_score_depth}")
 
         if hasattr(self, "training_data_filename"):
             self.save_ood_scores_to_file(
@@ -196,6 +220,10 @@ class ModelWrapper(nn.Module):
             weight_rgb = weights[0]
             weight_depth = weights[1]
             weight_ensemble = weights[2]
+
+            if output_rgb.shape[1] == 19:
+                output_rgb = torch.cat([output_rgb, torch.zeros_like(output_rgb[:, :1, ...])], dim=1)
+
 
             final_output[batch_index] = weight_rgb * output_rgb[batch_index] + weight_depth * output_depth[batch_index] + weight_ensemble * output[batch_index]
 

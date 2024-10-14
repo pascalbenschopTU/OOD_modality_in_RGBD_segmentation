@@ -1,4 +1,5 @@
 import os
+import gc
 import sys
 import time
 import json
@@ -25,24 +26,11 @@ from utils.model_wrapper import ModelWrapper
 
 MODEL_CONFIGURATION_DICT_FILE = "configs/model_configurations.json"
 
-class DummyTB:
-    def add_scalar(self, *args, **kwargs):
-        pass
-
-class DummySummary:
-    def visualize_image(self, *args, **kwargs):
-        pass
-
-
 def train_model_from_config(config, **kwargs):
     print(f"Using kwargs: {kwargs}")
 
     is_tuning = kwargs.get('is_tuning', False)
-    use_tb = config.get('use_tb', False)
-    use_aux = config.get('use_aux', False)
-
-    tb, tb_summary = DummyTB(), DummySummary()
-    if not is_tuning:
+    if not is_tuning and not hasattr(config, 'checkpoint_model'):
         config.log_dir = config.log_dir+'/run_'+time.strftime('%Y%m%d-%H%M%S', time.localtime()).replace(' ','_')
         os.makedirs(config.log_dir, exist_ok=True)
 
@@ -85,6 +73,8 @@ def train_model_from_config(config, **kwargs):
     ############################################ Scheduler ###########################################
 
     config.niters_per_epoch = config.num_train_imgs // config.batch_size + 1
+    if config.batch_size == 1:
+        config.niters_per_epoch = config.num_train_imgs
     if is_tuning:
         config.niters_per_epoch = config.num_train_imgs // config.batch_size
     total_iteration = config.nepochs * config.niters_per_epoch
@@ -97,14 +87,16 @@ def train_model_from_config(config, **kwargs):
     # Load pretrained model
     start_epoch = 1
 
-    if config.pretrained_model is not None:
-        checkpoint = torch.load(config.pretrained_model, map_location=device)
+    if hasattr(config, 'checkpoint_model') and config.checkpoint_model is not None:
+        checkpoint = torch.load(config.checkpoint_model, map_location=device)
         if 'model' in checkpoint:
-            print('loading pretrained model from %s' % config.pretrained_model)
+            print('loading checkpoint model from %s' % config.checkpoint_model)
             model.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch'] + 1
             current_idx = checkpoint['iteration']
+
+            config.log_dir = os.path.dirname(config.checkpoint_model)
             print('starting from epoch: ', start_epoch, 'iteration: ', current_idx)
 
     optimizer.zero_grad()
@@ -118,7 +110,6 @@ def train_model_from_config(config, **kwargs):
         dataloader = iter(train_loader)
 
         sum_loss = 0
-        i=0
         for idx in pbar:
             minibatch = next(dataloader)
             imgs = minibatch['data']
@@ -130,6 +121,27 @@ def train_model_from_config(config, **kwargs):
             modal_xs = modal_xs.to(device)
     
             output = model(imgs, modal_xs)
+
+            # if idx % 500 == 0:
+            #     import matplotlib.pyplot as plt
+            #     os.environ['KMP_DUPLICATE_LIB_OK']='True'
+
+            #     fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+            #     axs[0, 0].imshow(imgs[0].cpu().numpy().transpose(1, 2, 0))
+            #     axs[0, 0].set_title('Image')
+            #     axs[0, 0].axis('off')
+            #     axs[0, 1].imshow(gts[0].cpu().numpy())
+            #     axs[0, 1].set_title('Ground Truth')
+            #     axs[0, 1].axis('off')
+            #     axs[1, 0].imshow(output[0].argmax(0).cpu().numpy())
+            #     axs[1, 0].set_title('Prediction')
+            #     axs[1, 0].axis('off')
+            #     axs[1, 1].imshow(modal_xs[0].cpu().numpy().transpose(1, 2, 0))
+            #     axs[1, 1].set_title('Modal X')
+            #     axs[1, 1].axis('off')
+            #     plt.tight_layout()
+            #     # Save plot to config as epoch_$epoch_idx_$idx.png
+            #     plt.savefig(os.path.join(config.log_dir, f"epoch_{epoch}_idx_{idx}.png"))
 
             loss = model.get_loss(output, gts, criterion)
             
@@ -145,27 +157,13 @@ def train_model_from_config(config, **kwargs):
 
             sum_loss += loss.item()
 
-            if (epoch % config.checkpoint_step == 0 and epoch > int(config.checkpoint_start_epoch) or epoch == 1) and idx == 0:
-                tb_summary.visualize_image(
-                    writer=tb,
-                    images=imgs,
-                    depth=modal_xs,
-                    target=gts,
-                    output=output,
-                    global_step=epoch,
-                    config=config
-                )
-
             print_str = 'Epoch {}/{}'.format(epoch, config.nepochs) \
                     + ' Iter {}/{}:'.format(idx + 1, config.niters_per_epoch) \
                     + ' lr=%.4e' % lr \
                     + ' loss=%.4f total_loss=%.4f' % (loss, (sum_loss / (idx + 1)))
             pbar.set_description(print_str)
 
-            del imgs, gts, modal_xs, loss
-        
-        tb.add_scalar('train/loss', sum_loss / len(pbar), epoch)
-        tb.add_scalar('train/lr', lr, epoch)
+            del imgs, gts, modal_xs, loss, output
 
         if (epoch % config.checkpoint_step == 0 and epoch > int(config.checkpoint_start_epoch)) or epoch == config.nepochs or epoch == 1:
             if torch.cuda.is_available():
@@ -175,8 +173,11 @@ def train_model_from_config(config, **kwargs):
                 model.eval()
                 metrics = evaluate_with_loader(model, val_loader, config, device, bin_size=float('inf'))
                 miou = metrics.miou
-                mious = [miou]
-                print('macc: ', metrics.macc, 'mf1: ', metrics.mf1, 'miou: ', metrics.miou)
+                macc = metrics.macc
+                mf1 = metrics.mf1
+                ious = metrics.ious
+                print('macc: ', macc, 'mf1: ', mf1, 'miou: ', miou)
+                del metrics
 
                 if not is_tuning:
                     if miou > best_miou:
@@ -184,13 +185,13 @@ def train_model_from_config(config, **kwargs):
                         print('saving model...')
                         save_checkpoint(model, optimizer, epoch, current_idx, os.path.join(config.log_dir, f"epoch_{epoch}_miou_{miou}.pth"))
                     
-                    save_results(config.log_dir + '/results.txt', metrics, 0)
-                
-                tb.add_scalar('val/macc', metrics.macc, epoch)
-                tb.add_scalar('val/mf1', metrics.mf1, epoch)
-                tb.add_scalar('val/miou', miou, epoch)
+                    save_results(config.log_dir + '/results.txt', miou, macc, mf1, ious, 0)
 
-                del metrics
+                del miou, macc, mf1, ious
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
 
             ray_callback = kwargs.get('ray_callback', None)
             if ray_callback is not None:
@@ -215,6 +216,9 @@ def save_checkpoint(model, optimizer, epoch, iteration, path):
     state_dict['iteration'] = iteration
 
     torch.save(state_dict, path)
+
+    # Clean up
+    del state_dict, new_state_dict
 
 def run_hyperparameters(config, file_path, num_samples, num_hyperparameter_epochs):
     best_config_dict = tune_hyperparameters(

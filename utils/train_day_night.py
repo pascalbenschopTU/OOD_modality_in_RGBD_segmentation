@@ -19,11 +19,10 @@ from datasets.dark_zurich import DarkZurichDataset
 from models.refinenet import RefineNet
 from model_wrapper import ModelWrapper
 from train import train_model_from_config
-from evaluate_models import evaluate_with_loader
+from evaluate_models import evaluate_with_loader, create_predictions_with_loader, evaluate_with_loader_per_depth
 from adapt_dataset_and_test import test_property_shift
 from dataloader.RGBXDataset import RGBXDataset
 from dataloader.dataloader import get_val_loader, get_train_loader
-from hyperparameter_tuning import tune_hyperparameters
 
 import importlib
 import json
@@ -43,7 +42,7 @@ def load_model_weights(model, dataset='cityscapes'):
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240907-102001_depth\epoch_60_miou_58.575.pth"
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-085437\epoch_60_miou_62.949.pth"
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240919-081408\epoch_60_miou_64.263.pth"
-        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-132207\epoch_27_miou_66.829.pth"
+        depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-132207_depth\epoch_27_miou_66.829.pth"
         # depth_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240925-114529\epoch_29_miou_65.675.pth"
         # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Base\run_20240906-153744_rgb\epoch_60_miou_69.303.pth"
         # rgb_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-160023\epoch_60_miou_75.181.pth"
@@ -53,8 +52,8 @@ def load_model_weights(model, dataset='cityscapes'):
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240917-092117\epoch_60_miou_76.32.pth"
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240918-164033\epoch_60_miou_77.378.pth"
         # rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240920-134103\epoch_30_miou_76.198.pth"
-        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-160040\epoch_30_miou_74.369.pth"
-        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240926-191853\epoch_27_miou_62.719.pth"
+        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-160040_rgbd\epoch_30_miou_74.369.pth"
+        rgbd_model_weights = r"checkpoints\Cityscapes_DFormer-Small\run_20240923-132207_depth\epoch_27_miou_66.829.pth"
     elif dataset == 'nyu':
         depth_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-182309_depth\epoch_100_miou_35.249.pth"
         rgb_model_weights = r"checkpoints\NYUDepthv2_DFormer-Base\run_20240610-203359_rgb\epoch_100_miou_43.123.pth"
@@ -131,8 +130,11 @@ def main(args):
         config = importlib.import_module(config_location.replace('.py', '').replace('/', '.')).config
 
         model_config = model_configurations["DFormer_base"]
+        # model_config = model_configurations["RefineNet"]
         # model_config = model_configurations["DFormer_small"]
-        # model_config = model_configurations["SegFormer_mit_b2"]
+        # model_config = model_configurations["SegFormer_mit_b0"]
+        model_config = model_configurations["DepthAnything"]
+        # model_config = model_configurations["DFormer_large"]
 
         config.update(model_config)
         config.update({
@@ -143,7 +145,7 @@ def main(args):
             "num_train_imgs": len(trainset),
             "num_eval_imgs": len(valset),
             "background": CityscapesExt.voidClass,
-            "batch_size": 8,
+            "batch_size": 1,
         })
 
         dataloaders = {}
@@ -157,7 +159,7 @@ def main(args):
             config=config,
             criterion=criterion,
             norm_layer=nn.BatchNorm2d,
-            pretrained=True,
+            pretrained=False, #True,
         )
 
         if args.mode != 'train' and os.path.exists("cityscapes_training_ood_scores.json"):
@@ -192,36 +194,6 @@ def main(args):
             model.set_ood_scores("nyud_training_ood_scores.json")
 
     if args.mode == 'train':
-        if args.tune_hyperparameters:
-            # Split train dataloader into train and val
-            train_dataset = dataloaders['train'].dataset
-            
-            if args.hyperparameter_path is not None:
-                with open(args.hyperparameter_path, "r") as f:
-                    hyperparameter_config = json.load(f)
-            else:
-                # Tune hyperparameters
-                hyperparameter_config = tune_hyperparameters(
-                    config,
-                    train_dataset,
-                    train_callback=train_model_from_config,
-                    num_samples=20,
-                    max_num_epochs=3,
-                )
-
-                checkpoint_path = config.log_dir
-                if not os.path.exists(checkpoint_path):
-                    os.makedirs(checkpoint_path, exist_ok=True)
-                time_date = time.strftime("%Y%m%d-%H%M%S")
-                with open(f"{checkpoint_path}/hyperparameters_{time_date}.json", "w") as f:
-                    json.dump(hyperparameter_config, f)
-
-            config["lr"] = hyperparameter_config["lr"]
-            config["batch_size"] = hyperparameter_config["batch_size"]
-            config["lr_power"] = hyperparameter_config["lr_power"]
-            config["momentum"] = hyperparameter_config["momentum"]
-            config["weight_decay"] = hyperparameter_config["weight_decay"]
-        
         train_model_from_config(config=config, train_loader=dataloaders['train'], val_loader=dataloaders['val'])
     elif args.mode == 'test':
         with open('results.txt', 'a') as f:
@@ -237,20 +209,20 @@ def main(args):
             torch.cuda.empty_cache()
         
         # Load model weights
-        load_model_weights(model, args.dataset)
+        # load_model_weights(model, args.dataset)
 
         model.eval()
 
-        # with torch.no_grad():
-        #     evaluator = evaluate_with_loader(
-        #         model=model,
-        #         dataloader=dataloaders['val'],
-        #         config=config,
-        #         device=device,
-        #         bin_size=float('inf'),
-        #     )
+        with torch.no_grad():
+            evaluator = evaluate_with_loader(
+                model=model,
+                dataloader=dataloaders['val'],
+                config=config,
+                device=device,
+                bin_size=float('inf'),
+            )
 
-        #     print("val miou: ", evaluator.miou)
+            print("val miou: ", evaluator.miou)
 
         #     with open('results.txt', 'a') as f:
         #         f.write(f"validation results: {str(evaluator.miou)} \n")
@@ -261,6 +233,48 @@ def main(args):
             torch.cuda.manual_seed(0)
 
         model.eval()
+
+        # with torch.no_grad():
+        #     create_predictions_with_loader(
+        #         model=model,
+        #         dataset_location=r"datasets\Dark_Zurich_test_anon_withoutGt\rgb_anon\test",
+        #         config=config,
+        #         device=device,
+        #         output_dir="dark_zurich_predictions",
+        #     )
+
+        # with torch.no_grad():
+        #     create_predictions_with_loader(
+        #         model=model,
+        #         dataset_location=r"datasets\cityscapes\leftImg8bit\val",
+        #         config=config,
+        #         device=device,
+        #         output_dir="cityscapes_predictions",
+        #         output_sub_dirs=["predictions_val"],
+        #     )
+
+
+        # with torch.no_grad():
+        #     create_predictions_with_loader(
+        #         model=model,
+        #         dataset_location=r"datasets\Dark_Zurich_val_anon\rgb_anon\val",
+        #         config=config,
+        #         device=device,
+        #         output_dir="dark_zurich_predictions",
+        #         output_sub_dirs=["predictions_val"],
+        #     )
+
+        # exit()
+
+        # with torch.no_grad():
+        #     evaluate_with_loader_per_depth(
+        #         model=model,
+        #         dataloader=dataloaders['val'],
+        #         config=config,
+        #         device=device,
+        #         bin_size=float('inf'),
+        #         max_iters=-1,
+        #     )
 
         with torch.no_grad():
 
@@ -424,6 +438,7 @@ def main(args):
                 config=config,
                 device=device,
                 bin_size=float('inf'),
+                max_iters=200,
             )
 
             print("val miou: ", evaluator.miou)

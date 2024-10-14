@@ -5,6 +5,13 @@ mmseg/
 
 *.json
 *.txt
+*.pth
+
+torchhub/
+models/
+depth_anything*
+
+*predictions*
 
 __init__.py
 __pycache__/

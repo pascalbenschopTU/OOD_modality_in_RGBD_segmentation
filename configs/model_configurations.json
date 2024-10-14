@@ -47,6 +47,12 @@
       "pretrained_model": "checkpoints/pretrained/mit_b2.pth",
       "decoder": "Unused"
     },
+    "SegFormer_mit_b0": {
+      "model": "SegFormer",
+      "backbone": "MiT-B0",
+      "pretrained_model": "checkpoints/pretrained/mit_b0.pth",
+      "decoder": "Unused"
+    },
     "SegFormer_mit_b1": {
       "model": "SegFormer",
       "backbone": "MiT-B1",
@@ -57,6 +63,18 @@
       "model": "SegFormer",
       "backbone": "MiT-B2",
       "pretrained_model": "checkpoints/pretrained/mit_b2.pth",
+      "decoder": "Unused"
+    },
+    "SegFormer_mit_b3": {
+      "model": "SegFormer",
+      "backbone": "MiT-B3",
+      "pretrained_model": "checkpoints/pretrained/mit_b3.pth",
+      "decoder": "Unused"
+    },
+    "SegFormer_mit_b5": {
+      "model": "SegFormer",
+      "backbone": "MiT-B5",
+      "pretrained_model": "checkpoints/pretrained/mit_b5.pth",
       "decoder": "Unused"
     },
     "Gemini_mit_b1": {
@@ -76,5 +94,14 @@
         "backbone": "hidanet",
         "pretrained_model": "checkpoints/pretrained/mit_b1.pth",
         "decoder": "Unused"
+    },
+    "RefineNet": {
+        "model": "RefineNet",
+        "backbone": "resnet50",
+        "pretrained_model": "checkpoints/pretrained/cityscapes_w.pth.tar",
+        "decoder": "Unused"
+    },
+    "DepthAnything": {
+        "model": "DepthAnything"
     }
   }

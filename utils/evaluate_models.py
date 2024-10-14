@@ -11,6 +11,8 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 import json
+from collections import defaultdict
+from PIL import Image
 
 sys.path.append('../UsefullnessOfDepth')
 
@@ -21,6 +23,7 @@ from utils.dataloader.dataloader import get_val_loader
 from utils.logger import get_logger
 from utils.update_config import update_config
 from utils.pyt_utils import calculate_ood_score
+from utils.dataloader.transforms import test_trans
 
 
 MODEL_CONFIGURATION_DICT_FILE = "configs/model_configurations.json"
@@ -215,20 +218,16 @@ def plot_confusion_matrix(confusion_matrix, class_names, model_weights_dir, miou
     
     plt.savefig(result_file_name)
 
-def save_results(model_results_file, metric, num_params):
-    class_ious = "[" + " ".join([f"{iou:.1f}" for iou in metric.ious]) + "]"
-
+def save_results(model_results_file, miou, macc, mf1, ious, num_params):
+    class_ious = "[" + " ".join([f"{iou:.1f}" for iou in ious]) + "]"
 
     with open(model_results_file, 'a') as f:
-        f.write(f'miou: {metric.miou:.2f}, macc: {metric.macc:.2f}, mf1: {metric.mf1:.2f}, class ious: {class_ious}\n')
+        f.write(f'miou: {miou:.2f}, macc: {macc:.2f}, mf1: {mf1:.2f}, class ious: {class_ious}\n')
         if num_params != 0:
             f.write(f'model parameters: {num_params}\n')
-        if len(metric.bin_mious) > 1:
-            f.write(f'bin_mious: {metric.bin_mious} ')
-            f.write(f'bin_stdious: {metric.bin_stdious}\n')
 
 
-def evaluate_with_loader(model, dataloader, config, device, bin_size):
+def evaluate_with_loader(model, dataloader, config, device, bin_size=10000, max_iters=-1):
     with torch.no_grad():
         model.eval()
         n_classes = config.num_classes
@@ -238,6 +237,13 @@ def evaluate_with_loader(model, dataloader, config, device, bin_size):
             labels = minibatch["label"]
             modal_xs = minibatch["modal_x"]
 
+            # if i == 0:
+            #     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+            #     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+            #     axs[0].imshow(images[0].permute(1, 2, 0).cpu().numpy())
+            #     axs[1].imshow(modal_xs[0][0].cpu().numpy())
+            #     plt.show()
+
             if len(labels.shape) == 2:
                 labels = labels.unsqueeze(0)
 
@@ -246,9 +252,133 @@ def evaluate_with_loader(model, dataloader, config, device, bin_size):
             preds = model(images[0], images[1])
             
             preds = preds.softmax(dim=1)
+
+            # Resize preds to labels size
+            preds = torch.nn.functional.interpolate(preds, size=labels.shape[-2:], mode='nearest')
             evaluator.add_batch(labels.cpu().numpy(), preds.argmax(1).cpu().numpy())
+
+            if max_iters != -1 and i >= max_iters:
+                break
+
+            del images, labels, modal_xs, preds
+
         evaluator.calculate_results(ignore_class=config.background)
 
+    return evaluator
+
+def evaluate_with_loader_per_depth(model, dataloader, config, device, bin_size=10000, max_iters=-1):
+    depth_acc = defaultdict(list)  # To store accuracy per depth level
+    depth_counts = defaultdict(int)  # To store the number of occurrences per depth level
+
+    with torch.no_grad():
+        model.eval()
+        n_classes = config.num_classes
+        evaluator = Evaluator(n_classes, bin_size=bin_size, ignore_index=config.background)
+
+        for i, minibatch in enumerate(tqdm(dataloader, dynamic_ncols=True)):
+            images = minibatch["data"]
+            labels = minibatch["label"]
+            modal_xs = minibatch["modal_x"]  # Depth information
+
+            if len(labels.shape) == 2:
+                labels = labels.unsqueeze(0)
+
+            images = [images.to(device), modal_xs.to(device)]
+            labels = labels.to(device)
+            preds = model(images[0], images[1])
+            preds = preds.softmax(dim=1)
+            preds = preds.argmax(dim=1)
+
+           
+
+            # Loop over batch items
+            for b in range(labels.shape[0]):
+                pred_b = preds[b].cpu().numpy()
+                label_b = labels[b].cpu().numpy()
+                depth_b = modal_xs[b][0].cpu().numpy()  # Assuming modal_xs is the depth info
+
+                unique_depths = np.unique(depth_b)  # Unique depth levels in this batch
+
+                for depth in unique_depths:
+                    mask = (depth_b == depth)
+                    correct = (pred_b[mask] == label_b[mask]).sum()
+                    total = mask.sum()
+
+                    if total > 0:  # To avoid division by zero
+                        acc = correct / total
+                        depth_acc[depth].append(acc)  # Add accuracy for this depth level
+                        depth_counts[depth] += 1
+
+                        # print(f"Depth: {depth}, Accuracy: {acc}, Total: {total}")
+
+            if max_iters != -1 and i >= max_iters:
+                break
+
+            del images, labels, modal_xs, preds
+
+        # Average accuracy per depth level
+        mean_depth_acc = {depth: np.mean(accs) for depth, accs in depth_acc.items()}
+
+    keys = list(mean_depth_acc.keys())
+    keys = [int(round(key * 255)) for key in keys]
+    
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    plt.bar(keys, mean_depth_acc.values(), color='skyblue')
+    plt.xlabel('Depth Levels')
+    plt.ylabel('Mean Accuracy')
+    plt.title('Accuracy per Depth Level')
+    plt.show()
+
+    return mean_depth_acc
+
+
+def create_predictions_with_loader(model, dataset_location, config, device, output_dir="predictions", output_sub_dirs=["labelTrainIds", "confidence", "labelTrainIds_invalid"]):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    assert len(output_sub_dirs) > 0
+
+    with torch.no_grad():
+        model.eval()
+        n_classes = config.num_classes
+        evaluator = Evaluator(n_classes, ignore_index=config.background)
+        for root, _, files in os.walk(dataset_location):
+            for filename in tqdm(files):
+                output_file = os.path.join(root, filename)
+                output_file = output_file.replace("train", output_sub_dirs[0])
+                output_file = output_file.replace("val", output_sub_dirs[0])
+                os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+                if os.path.exists(output_file):
+                    continue
+
+                rgb_file = os.path.join(root, filename)
+                rgb_image = Image.open(rgb_file)
+                depth_file = rgb_file.replace("rgb_anon", "depth3")
+                depth_image = Image.open(depth_file)
+
+                rgb_tensor, depth_tensor, _ = test_trans(rgb_image, depth_image)
+
+                rgb_tensor = rgb_tensor.to(device)
+                depth_tensor = depth_tensor.to(device)
+
+                preds = model(rgb_tensor, depth_tensor)
+                preds = preds.softmax(dim=1)
+                output = preds.argmax(1).cpu().numpy()
+
+                for output_batch in output:
+                    # Resize back to the original image size
+                    output_resized = Image.fromarray(output_batch.astype(np.uint8))
+                    output_resized = output_resized.resize(rgb_image.size, Image.NEAREST)
+
+                    # Save labelTrainIds (Cityscapes trainID format)
+                    output_resized.save(output_file)
+                    if len(output_sub_dirs) > 1:
+                        for subdir in output_sub_dirs[1:]:
+                            output_file = os.path.join(root, subdir, filename)
+                            if not os.path.exists(output_file):
+                                output_resized.save(output_file)
     return evaluator
 
 def save_ood_scores_to_file(

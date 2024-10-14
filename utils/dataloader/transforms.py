@@ -192,8 +192,10 @@ def normalize(img, mean, std):
 ################################
 ### Data helpers
 ################################
-
-def test_trans(image, depth_image, mask=None, target_size=(512,1024), mean=None, std=None):
+# image, depth_image, mask=None, target_size=(1024,2048), mean=None, std=None, depth_aug=True)
+# (image, depth_image, mask=None, target_size=(1036,2058), mean=None, std=None, depth_aug=True)
+# (image, depth_image, mask=None, target_size=(896,896), mean=None, std=None, depth_aug=True)
+def test_trans(image, depth_image, mask=None, target_size=(896,896), mean=None, std=None, depth_aug=True):
     # Basic image pre-processing
     image = TF.resize(image, target_size, interpolation=1) # Resize, 1 for LANCZOS, 2 for BILINEAR
     depth_image = TF.resize(depth_image, target_size, interpolation=1) # Resize, 1 for LANCZOS, 2 for BILINEAR
@@ -201,6 +203,10 @@ def test_trans(image, depth_image, mask=None, target_size=(512,1024), mean=None,
     # From PIL to Tensor
     image = TF.to_tensor(image)
     depth_image = TF.to_tensor(depth_image)
+
+    if depth_aug:
+        # Normalize depth
+        depth_image = (depth_image - depth_image.min()) / (depth_image.max() - depth_image.min())
 
     if mean and std:
         image = TF.normalize(image, mean, std)
@@ -211,7 +217,8 @@ def test_trans(image, depth_image, mask=None, target_size=(512,1024), mean=None,
         mask = torch.from_numpy(mask) # Numpy array to tensor
     return image, depth_image, mask
 
-def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384,768), jitter=0.3, scale=0.3, hflip=True, depth_aug=True):
+# (1024,2048), crop_size=(512,1024), jitter=0.3, scale=0.3, hflip=True, depth_aug=True
+def train_trans(image, depth_image, mask, target_size=(1024,2048), crop_size=(896,896), jitter=0.5, scale=0.3, hflip=True, depth_aug=True):
     # Generate random parameters for augmentation
     bf = random.uniform(1-jitter,1+jitter)
     cf = random.uniform(1-jitter,1+jitter)
@@ -221,6 +228,7 @@ def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384
     pflip = random.randint(0,1) > 0.5
 
     # Resize
+    # print('image size:', image.size, "target size:", target_size)
     image = TF.resize(image, target_size, interpolation=1) # Resize, 2 for Image.BILINEAR
     depth_image = TF.resize(depth_image, target_size, interpolation=1) # Resize, 2 for Image.BILINEAR
     mask = TF.resize(mask, target_size, interpolation=0) # Resize, 0 for Image.NEAREST
@@ -229,50 +237,30 @@ def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384
     depth_image = TF.affine(depth_image, 0, [0,0], scale_factor, [0,0])
     mask = TF.affine(mask, 0, [0,0], scale_factor, [0,0])
 
+    image = TF.to_tensor(image)
+    depth_image = TF.to_tensor(depth_image)
+    mask = torch.from_numpy(np.array(mask, np.uint8))
+
     # Random cropping
     if crop_size:
-        # From PIL to Tensor
-        image = TF.to_tensor(image)
-        depth_image = TF.to_tensor(depth_image)
-        mask = TF.to_tensor(mask)
         h, w = target_size
         th, tw = crop_size # target size
         i = random.randint(0, h - th)
         j = random.randint(0, w - tw)
         image = image[:,i:i+th,j:j+tw]
         depth_image = depth_image[:,i:i+th,j:j+tw]
-        mask = mask[:,i:i+th,j:j+tw]
-        image = TF.to_pil_image(image)
-        depth_image = TF.to_pil_image(depth_image)
-        mask = TF.to_pil_image(mask[0,:,:])
+        mask = mask[i:i+th,j:j+tw]
 
-    # Apply noise, blur, depth range augmentations
+    # # Apply normalization and randomly adjust gamma
     if depth_aug:
-        min_depth = 0
-        max_depth = 255
+        # Normalize depth
+        depth_image = (depth_image - depth_image.min()) / (depth_image.max() - depth_image.min())
 
-        # {'occlusion_prob': 0.03899435843568351, 'noise_std': 0.0984376379069491}
-        noise_std = 0.0984376379069491
-        occlusion_prob = 0.03899435843568351
-        depth_image = TF.to_tensor(depth_image)
-
-        if np.random.rand() < occlusion_prob:
-            mask = torch.rand_like(depth_image) < 0.1
-            depth_image[mask] = 0
-
-        noise = torch.randn_like(depth_image) * noise_std * max_depth
-        noise = noise.clamp(0, 255).byte()
-        depth_image = depth_image + noise
-        depth_image = depth_image.clamp(0, 255).byte()
-
-        depth_image = TF.to_pil_image(depth_image)
-
-        
     # H-flip
     if pflip == True and hflip == True:
         image = TF.hflip(image)
         depth_image = TF.hflip(depth_image)
-        mask = TF.hflip(mask)
+        mask = TF.hflip(mask.unsqueeze(0)).squeeze(0)
     
     # Color jitter
     if jitter != 0:
@@ -281,12 +269,22 @@ def train_trans(image, depth_image, mask, target_size=(512,1024), crop_size=(384
         image = TF.adjust_saturation(image, sf)
         image = TF.adjust_hue(image, hf)
 
-    # From PIL to Tensor
-    image = TF.to_tensor(image)
-    depth_image = TF.to_tensor(depth_image)
+    # import os
+    # os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
-    # Convert ids to train_ids
-    mask = np.array(mask, np.uint8) # PIL Image to numpy array
-    mask = torch.from_numpy(mask) # Numpy array to tensor
+    # import matplotlib.pyplot as plt
+    # # Show depth map for debug
+    # plt.imshow(depth_image.squeeze(0).numpy())
+    # plt.show()
+
+    # From PIL to Tensor
+    # image = TF.to_tensor(image)
+    # depth_image = TF.to_tensor(depth_image)
+
+    # # Convert ids to train_ids
+    # mask = np.array(mask, np.uint8) # PIL Image to numpy array
+    # mask = torch.from_numpy(mask) # Numpy array to tensor
+    # if len(mask.size()) == 3:
+    #     mask = mask.squeeze(0)
         
     return image, depth_image, mask
